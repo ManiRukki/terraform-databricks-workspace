@@ -1,0 +1,43 @@
+# Terraform state files — NEVER commit these
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Terraform plan files
+*.tfplan
+tfplan
+tfplan-*
+
+# Terraform lock file (commit this — it pins provider versions)
+# .terraform.lock.hcl  ← DO commit this
+
+# Terraform working directory
+.terraform/
+
+# Variable files with secrets — use GitHub Secrets instead
+*.auto.tfvars
+terraform.tfvars.sensitive
+
+# Backend config files (contain storage account names)
+backend.hcl
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+crash.log
+crash.*.log
+
+# Environment-specific overrides
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json

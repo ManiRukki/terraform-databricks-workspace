@@ -1,0 +1,143 @@
+name: Terraform Apply
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.tf'
+      - '**.tfvars'
+      - '.github/workflows/terraform-apply.yml'
+
+env:
+  TF_VERSION: '1.7.0'
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_ACCESS_KEY: ${{ secrets.TF_STATE_STORAGE_KEY }}
+
+jobs:
+  # ── DEV: auto-apply on every merge to main ──────────────────────────────────
+  apply-dev:
+    name: Apply → Dev
+    runs-on: ubuntu-latest
+    environment: dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init (dev)
+        run: |
+          terraform init \
+            -backend-config="key=databricks-dev.tfstate" \
+            -backend-config="resource_group_name=rg-terraform-state" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate"
+
+      - name: Terraform Apply (dev)
+        run: |
+          terraform apply \
+            -var-file="environments/dev/terraform.tfvars" \
+            -var="databricks_account_id=${{ secrets.DATABRICKS_ACCOUNT_ID }}" \
+            -auto-approve \
+            -no-color
+
+      - name: Output Workspace URL
+        run: terraform output workspace_url
+
+  # ── STAGING: requires manual approval ──────────────────────────────────────
+  apply-staging:
+    name: Apply → Staging
+    runs-on: ubuntu-latest
+    environment: staging   # GitHub environment with required reviewers
+    needs: apply-dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init (staging)
+        run: |
+          terraform init \
+            -backend-config="key=databricks-staging.tfstate" \
+            -backend-config="resource_group_name=rg-terraform-state" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate"
+
+      - name: Terraform Apply (staging)
+        run: |
+          terraform apply \
+            -var-file="environments/staging/terraform.tfvars" \
+            -var="databricks_account_id=${{ secrets.DATABRICKS_ACCOUNT_ID }}" \
+            -auto-approve \
+            -no-color
+
+  # ── PROD: requires manual approval + separate env secrets ───────────────────
+  apply-prod:
+    name: Apply → Production
+    runs-on: ubuntu-latest
+    environment: prod      # GitHub environment with required reviewers + wait timer
+    needs: apply-staging
+
+    env:
+      ARM_CLIENT_ID: ${{ secrets.PROD_AZURE_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.PROD_AZURE_CLIENT_SECRET }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.PROD_AZURE_SUBSCRIPTION_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init (prod)
+        run: |
+          terraform init \
+            -backend-config="key=databricks-prod.tfstate" \
+            -backend-config="resource_group_name=rg-terraform-state" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate"
+
+      - name: Terraform Plan (prod — safety check)
+        run: |
+          terraform plan \
+            -var-file="environments/prod/terraform.tfvars" \
+            -var="databricks_account_id=${{ secrets.PROD_DATABRICKS_ACCOUNT_ID }}" \
+            -detailed-exitcode \
+            -no-color
+
+      - name: Terraform Apply (prod)
+        run: |
+          terraform apply \
+            -var-file="environments/prod/terraform.tfvars" \
+            -var="databricks_account_id=${{ secrets.PROD_DATABRICKS_ACCOUNT_ID }}" \
+            -auto-approve \
+            -no-color
+
+      - name: Notify Slack on Success
+        if: success()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+            --data '{"text":"✅ Terraform prod apply succeeded — Databricks workspace updated"}' \
+            ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify Slack on Failure
+        if: failure()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+            --data '{"text":"🚨 Terraform prod apply FAILED — immediate attention required"}' \
+            ${{ secrets.SLACK_WEBHOOK_URL }}

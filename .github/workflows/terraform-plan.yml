@@ -1,0 +1,111 @@
+name: Terraform Plan
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '**.tf'
+      - '**.tfvars'
+      - '.github/workflows/terraform-plan.yml'
+
+env:
+  TF_VERSION: '1.7.0'
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_ACCESS_KEY: ${{ secrets.TF_STATE_STORAGE_KEY }}
+
+jobs:
+  terraform-plan-dev:
+    name: Plan (dev)
+    runs-on: ubuntu-latest
+    environment: dev
+    defaults:
+      run:
+        working-directory: .
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      - name: Terraform Init (dev)
+        run: |
+          terraform init \
+            -backend-config="key=databricks-dev.tfstate" \
+            -backend-config="resource_group_name=rg-terraform-state" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate"
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan (dev)
+        id: plan
+        run: |
+          terraform plan \
+            -var-file="environments/dev/terraform.tfvars" \
+            -var="databricks_account_id=${{ secrets.DATABRICKS_ACCOUNT_ID }}" \
+            -no-color \
+            -out=tfplan-dev
+        continue-on-error: true
+
+      - name: Post Plan as PR Comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const output = `#### Terraform Plan — Dev Environment 🔵
+            \`\`\`
+            ${{ steps.plan.outputs.stdout }}
+            \`\`\`
+            *Triggered by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+      - name: Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+  terraform-plan-staging:
+    name: Plan (staging)
+    runs-on: ubuntu-latest
+    environment: staging
+    needs: terraform-plan-dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init (staging)
+        run: |
+          terraform init \
+            -backend-config="key=databricks-staging.tfstate" \
+            -backend-config="resource_group_name=rg-terraform-state" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate"
+
+      - name: Terraform Plan (staging)
+        run: |
+          terraform plan \
+            -var-file="environments/staging/terraform.tfvars" \
+            -var="databricks_account_id=${{ secrets.DATABRICKS_ACCOUNT_ID }}" \
+            -no-color
